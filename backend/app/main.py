@@ -71,11 +71,8 @@ def sessions(season: int, round: int):
     base = ["FP1", "FP2", "FP3", "Q", "R"]
     return SessionList(season=season, round=round, sessions=base)
 
-from app.services.weather_evolution import load_weather_and_track_evolution
 
-@app.get("/analysis/weather-evolution/{season}/{round}/{session}")
-def weather_evolution(season: int, round: int, session: str):
-    return load_weather_and_track_evolution(season, round, session)
+
 
 from app.services.weather_evolution import load_weather_and_tei
 
