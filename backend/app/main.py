@@ -76,3 +76,9 @@ from app.services.weather_evolution import load_weather_and_track_evolution
 @app.get("/analysis/weather-evolution/{season}/{round}/{session}")
 def weather_evolution(season: int, round: int, session: str):
     return load_weather_and_track_evolution(season, round, session)
+
+from app.services.weather_evolution import load_weather_and_tei
+
+@app.get("/analysis/weather-evolution/{season}/{round}/{session}")
+def weather_evolution(season: int, round: int, session: str):
+    return load_weather_and_tei(season, round, session)
