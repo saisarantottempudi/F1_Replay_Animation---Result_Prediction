@@ -17,3 +17,18 @@ cache/
 
 # Env
 .env
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Frontend
+node_modules/
+dist/
+
+# Cache
+cache/
+.fastf1/
+
+# OS
+.DS_Store

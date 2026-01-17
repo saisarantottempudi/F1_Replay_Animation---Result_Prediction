@@ -1,0 +1,28 @@
+{
+  "target": "label_quali_top3",
+  "kind": "quali",
+  "rows": 1357,
+  "n_groups": 68,
+  "numeric_cols": [
+    "grid_pos",
+    "quali_best_s",
+    "drv_roll_points",
+    "drv_roll_finish",
+    "drv_roll_grid",
+    "drv_roll_quali",
+    "drv_roll_pos_delta",
+    "team_roll_points",
+    "team_roll_finish",
+    "incident",
+    "sc",
+    "vsc",
+    "red_flag",
+    "season"
+  ],
+  "cat_cols": [
+    "driver",
+    "team"
+  ],
+  "cv_auc_mean": 0.9721659490628666,
+  "cv_logloss_mean": 0.14882535639920108
+}

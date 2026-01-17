@@ -4,6 +4,8 @@ from app.api.routes.strategy import router as strategy_router
 from app.api.routes.tyre_degradation import router as tyre_deg_router
 
 from fastapi import FastAPI
+from app.api.routes.predict import router as predict_router
+from app.api.routes.championship import router as championship_router
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
@@ -86,3 +88,6 @@ def weather_evolution(season: int, round: int, session: str):
 app.include_router(tyres_router)
 app.include_router(strategy_router)
 app.include_router(tyre_deg_router)
+
+app.include_router(predict_router)
+app.include_router(championship_router)
