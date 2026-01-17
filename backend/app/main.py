@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.api.routes.tyres import router as tyres_router
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -79,3 +80,5 @@ from app.services.weather_evolution import load_weather_and_tei
 @app.get("/analysis/weather-evolution/{season}/{round}/{session}")
 def weather_evolution(season: int, round: int, session: str):
     return load_weather_and_tei(season, round, session)
+
+app.include_router(tyres_router)
