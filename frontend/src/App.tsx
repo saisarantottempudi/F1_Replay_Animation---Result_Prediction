@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import TyreLegend from "./components/TyreLegend";
 import TyreStintsTimeline from "./components/TyreStintsTimeline";
+import TyreDegradationPanel from "./components/TyreDegradationPanel";
+import StrategyPanel from "./components/StrategyPanel";
+import { getTyres } from "./api/f1";
 import { getJSON } from "./api/client";
 
 type SeasonList = { seasons: number[] };
@@ -93,7 +96,24 @@ export default function App() {
     })();
   }, [season, round, session]);
 
-  return (
+  
+  useEffect(() => {
+    // Tyre stints are meaningful for Race (R). We still allow fetching for others.
+    setTyres(null);
+    setStatus("Loading tyres…");
+    getTyres(season, round, session)
+      .then((d) => {
+        setTyres(d);
+        setStatus("Ready");
+      })
+      .catch((e) => {
+        setTyres(null);
+        setStatus("Ready");
+        console.error(e);
+      });
+  }, [season, round, session]);
+
+return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
       <h1 style={{ marginTop: 0 }}>F1 Replay + Prediction</h1>
 
@@ -159,7 +179,42 @@ export default function App() {
           </div>
 
           <div style={{ marginTop: 14, opacity: 0.85 }}>
-            Next: we’ll render the <b>Tyre Stints Timeline</b> with these colors.
+            {tyres && tyres.drivers.length > 0 && (
+              <>
+                <h3 style={{ marginTop: 18 }}>Tyre Stints Timeline</h3>
+                <TyreStintsTimeline drivers={tyres.drivers} />
+
+            {session === "R" ? (
+              <>
+                <h3 style={{ marginTop: 18 }}>Tyre Degradation (per driver)</h3>
+                <TyreDegradationPanel
+                  season={season}
+                  round={round}
+                  session={session}
+                  drivers={(tyres?.drivers ?? []).map((d: any) => d.driver)}
+                />
+              </>
+            ) : (
+              <p style={{ opacity: 0.7, marginTop: 12 }}>
+                Tyre degradation is available for <b>Race (R)</b> sessions.
+              </p>
+            )}
+            {session === "R" && (
+              <TyreDegradationPanel
+                season={season}
+                round={round}
+                session={session}
+                drivers={tyres.drivers.map((d: any) => d.driver)}
+              />
+            )}
+              </>
+            )}
+
+            {tyres && tyres.drivers.length === 0 && (
+              <p style={{ opacity: 0.7, marginTop: 12 }}>
+                Tyre stints are not available for this session.
+              </p>
+            )}
           </div>
         </main>
       </div>
