@@ -1,117 +1,142 @@
-from __future__ import annotations
-
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any
+import random
 import numpy as np
+
+# Optional dependency (only required for full mode)
+try:
+    from app.services.predict_live import predict_race_live
+except ModuleNotFoundError:
+    predict_race_live = None
+
 import fastf1
-
-from app.services.predict_results import predict_race
-
-
-# F1 points (modern)
-POINTS_TOP10 = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1]
+from collections import defaultdict
 
 
-def _sample_finish_order(drivers: List[str], p_win: np.ndarray) -> List[str]:
+def simulate_season(
+    season: int,
+    sims: int = 300,
+    upto_round: int | None = None,
+    mode: str = "fast",
+) -> Dict[str, Any]:
     """
-    Simple probabilistic ordering:
-    - Use p_win as "strength"
-    - Convert to positive weights
-    - Sample without replacement
+    Simulate a full championship.
+
+    mode:
+      - fast: expected-points approximation (no per-race sampling)
+      - full: Monte Carlo race-by-race simulation (requires predict_live)
     """
-    w = np.clip(p_win, 1e-6, None)
-    w = w / w.sum()
-    order = []
-    remaining = drivers[:]
-    weights = w.copy()
 
-    for _ in range(len(drivers)):
-        idx = np.random.choice(len(remaining), p=weights)
-        order.append(remaining.pop(idx))
-        weights = np.delete(weights, idx)
-        if len(weights) > 0:
-            weights = weights / weights.sum()
+    # Cap sims defensively
+    if mode == "fast":
+        sims = min(int(sims), 50)
+    elif mode == "full":
+        sims = int(sims)
+    else:
+        sims = min(int(sims), 100)
 
-    return order
+    if mode == "full" and predict_race_live is None:
+        raise RuntimeError("Full mode requires app.services.predict_live")
+
+    return _simulate_season_impl(
+        season=season,
+        n_sims=sims,
+        upto_round=upto_round,
+        mode=mode,
+    )
 
 
-def simulate_season(season: int, n_sims: int = 500, top_round: int | None = None) -> Dict[str, Any]:
-    """
-    Championship simulation:
-    - gets schedule from FastF1
-    - for each round: calls predict_race
-    - samples finishing order using p_win distribution
-    - assigns points for top10
-    - aggregates driver + constructor points
-    """
+def _simulate_season_impl(
+    season: int,
+    n_sims: int = 300,
+    upto_round: int | None = None,
+    mode: str = "fast",
+) -> Dict[str, Any]:
 
     schedule = fastf1.get_event_schedule(season)
 
-    # ✅ Filter to actual race weekends (exclude testing / non-round entries)
-    schedule = schedule.copy()
-    schedule["RoundNumber"] = schedule["RoundNumber"].astype("Int64")
+    # Filter race events only
+    races = schedule[schedule["EventFormat"] != "testing"]
 
-    # RoundNumber must exist and be >= 1 (removes pre-season testing which is often round 0)
-    schedule = schedule[schedule["RoundNumber"].notna() & (schedule["RoundNumber"] >= 1)].copy()
+    if upto_round is not None:
+        races = races[races["RoundNumber"] <= upto_round]
 
-    # Some seasons include non-championship items; ensure it looks like a race event
-    if "EventName" in schedule.columns:
-        schedule = schedule[~schedule["EventName"].str.contains("Testing", case=False, na=False)].copy()
+    rounds = int(races["RoundNumber"].max())
 
-    rounds = list(schedule["RoundNumber"].astype(int).values)
+    driver_titles = defaultdict(int)
+    constructor_titles = defaultdict(int)
 
-    if top_round is not None:
-        rounds = [r for r in rounds if r <= int(top_round)]
+    if mode == "fast":
+        return _simulate_fast_expected_points(season, races, upto_round)
 
-    driver_titles = {}
-    constructor_titles = {}
-
+    # -------- FULL MONTE CARLO MODE --------
     for _ in range(n_sims):
-        drv_points: Dict[str, int] = {}
-        team_points: Dict[str, int] = {}
-        driver_team: Dict[str, str] = {}
+        driver_points = defaultdict(float)
+        team_points = defaultdict(float)
 
-        for rnd in rounds:
-            pred = predict_race(season, int(rnd), topk=3)
-            all_rows = pred["all"]
+        for _, row in races.iterrows():
+            rnd = int(row["RoundNumber"])
 
-            drivers = [r["driver"] for r in all_rows]
-            teams = {r["driver"]: (r.get("team") or "UNKNOWN") for r in all_rows}
-            p_win = np.array([r["p_win"] for r in all_rows], dtype=float)
+            preds = predict_race_live(season, rnd)
 
-            finish = _sample_finish_order(drivers, p_win)
+            for i, d in enumerate(preds["all"]):
+                pts = _points_for_position(i + 1)
+                driver_points[d["driver"]] += pts
+                team_points[d["team"]] += pts
 
-            # assign points top10
-            for pos, drv in enumerate(finish[:10]):
-                pts = POINTS_TOP10[pos]
-                drv_points[drv] = drv_points.get(drv, 0) + pts
-                team = teams.get(drv, "UNKNOWN")
-                driver_team[drv] = team
-                team_points[team] = team_points.get(team, 0) + pts
+        champ_driver = max(driver_points, key=driver_points.get)
+        champ_team = max(team_points, key=team_points.get)
 
-        # champions of this simulation
-        drv_champ = max(drv_points.items(), key=lambda x: x[1])[0] if drv_points else "UNKNOWN"
-        team_champ = max(team_points.items(), key=lambda x: x[1])[0] if team_points else "UNKNOWN"
-
-        driver_titles[drv_champ] = driver_titles.get(drv_champ, 0) + 1
-        constructor_titles[team_champ] = constructor_titles.get(team_champ, 0) + 1
-
-    # Convert to probabilities
-    driver_odds = sorted(
-        [{"driver": k, "prob": v / n_sims} for k, v in driver_titles.items()],
-        key=lambda x: x["prob"],
-        reverse=True,
-    )
-    constructor_odds = sorted(
-        [{"team": k, "prob": v / n_sims} for k, v in constructor_titles.items()],
-        key=lambda x: x["prob"],
-        reverse=True,
-    )
+        driver_titles[champ_driver] += 1
+        constructor_titles[champ_team] += 1
 
     return {
         "season": season,
-        "n_sims": n_sims,
+        "mode": mode,
         "rounds_simulated": rounds,
-        "driver_champion_odds": driver_odds,
-        "constructor_champion_odds": constructor_odds,
-        "message": "Championship simulation complete (v1 Monte Carlo)."
+        "driver_champion": [
+            {"driver": k, "prob": v / n_sims}
+            for k, v in sorted(driver_titles.items(), key=lambda x: -x[1])
+        ],
+        "constructor_champion": [
+            {"team": k, "prob": v / n_sims}
+            for k, v in sorted(constructor_titles.items(), key=lambda x: -x[1])
+        ],
+        "n_sims": n_sims,
     }
+
+
+def _simulate_fast_expected_points(season, races, upto_round=None):
+    """
+    Fast approximation using expected race probabilities.
+    """
+    from app.services.predict_live import predict_race_live
+
+    driver_points = defaultdict(float)
+    team_points = defaultdict(float)
+
+    for _, row in races.iterrows():
+        rnd = int(row["RoundNumber"])
+        preds = predict_race_live(season, rnd)
+
+        for i, d in enumerate(preds["all"]):
+            pts = _points_for_position(i + 1)
+            driver_points[d["driver"]] += pts * d["p_win"]
+            team_points[d["team"]] += pts * d["p_win"]
+
+    return {
+        "season": season,
+        "mode": "fast",
+        "driver_champion": sorted(
+            [{"driver": k, "expected_points": v} for k, v in driver_points.items()],
+            key=lambda x: -x["expected_points"],
+        ),
+        "constructor_champion": sorted(
+            [{"team": k, "expected_points": v} for k, v in team_points.items()],
+            key=lambda x: -x["expected_points"],
+        ),
+    }
+
+
+def _points_for_position(pos: int) -> int:
+    points = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1]
+    return points[pos - 1] if pos <= len(points) else 0

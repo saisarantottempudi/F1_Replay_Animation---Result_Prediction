@@ -1,0 +1,193 @@
+from __future__ import annotations
+
+from typing import Dict, Any, List, Tuple
+
+# In-process cache to avoid re-fetching predictions repeatedly
+_PRED_CACHE: dict[tuple[int,int], dict] = {}
+import numpy as np
+import fastf1
+
+from app.services.predict_results import predict_race
+
+
+# F1 points (modern)
+POINTS_TOP10 = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1]
+
+
+def _sample_finish_order(drivers: List[str], p_win: np.ndarray) -> List[str]:
+    """
+    Simple probabilistic ordering:
+    - Use p_win as "strength"
+    - Convert to positive weights
+    - Sample without replacement
+    """
+    w = np.clip(p_win, 1e-6, None)
+    w = w / w.sum()
+    order = []
+    remaining = drivers[:]
+    weights = w.copy()
+
+    for _ in range(len(drivers)):
+        idx = np.random.choice(len(remaining), p=weights)
+        order.append(remaining.pop(idx))
+        weights = np.delete(weights, idx)
+        if len(weights) > 0:
+            weights = weights / weights.sum()
+
+    return order
+
+
+
+def _valid_race_events(schedule):
+    """Return only championship race events with a valid round number."""
+    if schedule is None or len(schedule) == 0:
+        return schedule
+    # FastF1 schedules sometimes include testing/round 0
+    if "RoundNumber" in schedule.columns:
+        schedule = schedule[schedule["RoundNumber"].fillna(0).astype(int) >= 1]
+    # Extra guard: EventName contains 'Test' / 'Testing'
+    if "EventName" in schedule.columns:
+        schedule = schedule[~schedule["EventName"].astype(str).str.contains("Test", case=False, na=False)]
+        schedule = schedule[~schedule["EventName"].astype(str).str.contains("Testing", case=False, na=False)]
+    return schedule
+
+def simulate_season(season: int, n_sims: int = 500, top_round: int | None = None) -> Dict[str, Any]:
+    """
+    Championship simulation:
+    - gets schedule from FastF1
+    - for each round: calls predict_race
+    - samples finishing order using p_win distribution
+    - assigns points for top10
+    - aggregates driver + constructor points
+    """
+
+    # FAST MODE: deterministic expected points (no Monte Carlo)
+    # Uses per-round race+top3 probabilities once per round.
+    if mode == \"fast\":
+        return _simulate_fast_expected_points(season, schedule, upto_round=upto_round)
+# ✅ Filter to actual race weekends (exclude testing / non-round entries)
+    schedule = schedule.copy()
+    schedule["RoundNumber"] = schedule["RoundNumber"].astype("Int64")
+
+    # RoundNumber must exist and be >= 1 (removes pre-season testing which is often round 0)
+    schedule = schedule[schedule["RoundNumber"].notna() & (schedule["RoundNumber"] >= 1)].copy()
+
+    # Some seasons include non-championship items; ensure it looks like a race event
+    if "EventName" in schedule.columns:
+        schedule = schedule[~schedule["EventName"].str.contains("Testing", case=False, na=False)].copy()
+
+    rounds = list(schedule["RoundNumber"].astype(int).values)
+
+    if top_round is not None:
+        rounds = [r for r in rounds if r <= int(top_round)]
+
+    driver_titles = {}
+    constructor_titles = {}
+
+    for _ in range(n_sims):
+        drv_points: Dict[str, int] = {}
+        team_points: Dict[str, int] = {}
+        driver_team: Dict[str, str] = {}
+
+        for rnd in rounds:
+            pred = predict_race(season, int(rnd), topk=3)
+            all_rows = pred["all"]
+
+            drivers = [r["driver"] for r in all_rows]
+            teams = {r["driver"]: (r.get("team") or "UNKNOWN") for r in all_rows}
+            p_win = np.array([r["p_win"] for r in all_rows], dtype=float)
+
+            finish = _sample_finish_order(drivers, p_win)
+
+            # assign points top10
+            for pos, drv in enumerate(finish[:10]):
+                pts = POINTS_TOP10[pos]
+                drv_points[drv] = drv_points.get(drv, 0) + pts
+                team = teams.get(drv, "UNKNOWN")
+                driver_team[drv] = team
+                team_points[team] = team_points.get(team, 0) + pts
+
+        # champions of this simulation
+        drv_champ = max(drv_points.items(), key=lambda x: x[1])[0] if drv_points else "UNKNOWN"
+        team_champ = max(team_points.items(), key=lambda x: x[1])[0] if team_points else "UNKNOWN"
+
+        driver_titles[drv_champ] = driver_titles.get(drv_champ, 0) + 1
+        constructor_titles[team_champ] = constructor_titles.get(team_champ, 0) + 1
+
+    # Convert to probabilities
+    driver_odds = sorted(
+        [{"driver": k, "prob": v / n_sims} for k, v in driver_titles.items()],
+        key=lambda x: x["prob"],
+        reverse=True,
+    )
+    constructor_odds = sorted(
+        [{"team": k, "prob": v / n_sims} for k, v in constructor_titles.items()],
+        key=lambda x: x["prob"],
+        reverse=True,
+    )
+
+    return {
+        "season": season,
+        "n_sims": n_sims,
+        "rounds_simulated": rounds,
+        "driver_champion_odds": driver_odds,
+        "constructor_champion_odds": constructor_odds,
+        "message": "Championship simulation complete (v1 Monte Carlo)."
+    }
+
+
+def _simulate_fast_expected_points(season, schedule, upto_round=None):
+    """Deterministic championship projection: expected points based on win/top3 probabilities."""
+    import pandas as pd
+    from collections import defaultdict
+    from app.services.predict_live import predict_race_live  # uses existing live predictor
+
+    pts_win = 25.0
+    pts_p2 = 18.0
+    pts_p3 = 15.0
+
+    drv_points = defaultdict(float)
+    team_points = defaultdict(float)
+
+    rounds = schedule["RoundNumber"].astype(int).tolist() if "RoundNumber" in schedule.columns else []
+    if upto_round is not None:
+        rounds = [r for r in rounds if r <= int(upto_round)]
+
+    for r in rounds:
+        # cache
+        cache_key = (int(season), int(r))
+        if cache_key in _PRED_CACHE:
+            pred = _PRED_CACHE[cache_key]
+        else:
+            pred = predict_race_live(int(season), int(r), topk=20)
+            _PRED_CACHE[cache_key] = pred
+
+        all_rows = pred.get("all", [])
+        # expected points approx:
+        # E[points] = P(win)*25 + P(top3)*avg(p2/p3 share)
+        # We distribute top3 probability into P2/P3 equally after removing P(win)
+        for row in all_rows:
+            p_win = float(row.get("p_win", 0.0) or 0.0)
+            p_top3 = float(row.get("p_top3", 0.0) or 0.0)
+            p_23 = max(0.0, p_top3 - p_win)
+            p2 = p_23 * 0.5
+            p3 = p_23 * 0.5
+            exp_pts = p_win * pts_win + p2 * pts_p2 + p3 * pts_p3
+            drv = row.get("driver")
+            team = row.get("team")
+            if drv:
+                drv_points[drv] += exp_pts
+            if team:
+                team_points[team] += exp_pts
+
+    drv_rank = sorted(drv_points.items(), key=lambda x: x[1], reverse=True)
+    team_rank = sorted(team_points.items(), key=lambda x: x[1], reverse=True)
+
+    return {
+        "season": int(season),
+        "mode": "fast",
+        "rounds_used": len(rounds),
+        "drivers": [{"driver": d, "exp_points": float(p)} for d, p in drv_rank],
+        "constructors": [{"team": t, "exp_points": float(p)} for t, p in team_rank],
+        "message": "Fast expected-points championship projection (no Monte Carlo)."
+    }
