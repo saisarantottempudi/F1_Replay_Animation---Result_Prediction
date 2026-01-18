@@ -100,3 +100,72 @@ export async function getStrategy(season: number, round: number): Promise<Strate
   if (!res.ok) throw new Error(`Strategy fetch failed: ${res.status}`);
   return res.json();
 }
+
+
+export type RacePredRow = {
+  driver: string;
+  team: string;
+  p_win?: number;
+  p_top3?: number;
+  grid_pos?: number;
+  quali_best_s?: number;
+};
+
+export type RacePredictionResponse = {
+  season: number;
+  round: number;
+  source: string;
+  winner: RacePredRow;
+  top3: RacePredRow[];
+  all: RacePredRow[];
+};
+
+export type QualiPredRow = {
+  driver: string;
+  team: string;
+  p_pole?: number;
+  p_top3?: number;
+  quali_best_s?: number;
+};
+
+export type QualiPredictionResponse = {
+  season: number;
+  round: number;
+  source: string;
+  pole: QualiPredRow;
+  top3: QualiPredRow[];
+  all: QualiPredRow[];
+};
+
+export type ChampRowDriver = { driver: string; expected_points: number };
+export type ChampRowTeam = { team: string; expected_points: number };
+
+export type ChampionshipFastResponse = {
+  season: number;
+  mode: string;
+  driver_champion: ChampRowDriver[];
+  constructor_champion?: ChampRowTeam[];
+};
+
+
+export async function getRacePrediction(season: number, round: number, topk = 3): Promise<RacePredictionResponse> {
+  const r = await fetch(`${API_BASE}/predict/race/${season}/${round}?topk=${topk}`);
+  if (!r.ok) throw new Error(`Race prediction fetch failed: ${r.status}`);
+  return r.json();
+}
+
+export async function getQualiPrediction(season: number, round: number, topk = 3): Promise<QualiPredictionResponse> {
+  const r = await fetch(`${API_BASE}/predict/quali/${season}/${round}?topk=${topk}`);
+  if (!r.ok) throw new Error(`Quali prediction fetch failed: ${r.status}`);
+  return r.json();
+}
+
+export async function getChampionshipFast(season: number, sims = 5, upto_round?: number): Promise<ChampionshipFastResponse> {
+  const q = new URLSearchParams();
+  q.set("mode", "fast");
+  q.set("sims", String(sims));
+  if (upto_round != null) q.set("upto_round", String(upto_round));
+  const r = await fetch(`${API_BASE}/predict/championship/${season}?${q.toString()}`);
+  if (!r.ok) throw new Error(`Championship fetch failed: ${r.status}`);
+  return r.json();
+}

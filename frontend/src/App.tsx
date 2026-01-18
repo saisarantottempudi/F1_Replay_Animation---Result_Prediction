@@ -1,13 +1,36 @@
 import { useEffect, useMemo, useState } from "react";
 import TyreLegend from "./components/TyreLegend";
 import TyreStintsTimeline from "./components/TyreStintsTimeline";
+import PredictionPanel from "./components/PredictionPanel";
 import TyreDegradationPanel from "./components/TyreDegradationPanel";
 import StrategyPanel from "./components/StrategyPanel";
 import { getTyres } from "./api/f1";
 import { getJSON } from "./api/client";
 
 type SeasonList = { seasons: number[] };
-type RaceInfo = { round: number; raceName: string };
+type RaceInfo = { round: number; raceName: string; date?: string | null };
+
+function isoTodayUTC(): string {
+  // Compare using YYYY-MM-DD strings (safe for ISO dates)
+  const d = new Date();
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function isFutureRace(r: { round: number; date?: string | null }): boolean {
+  // hide testing / non-race items
+  if (!r || r.round <= 0) return false;
+  if (!r.date) return false;
+  return r.date >= isoTodayUTC();
+}
+
+function isPastOrTodayRace(r: { round: number; date?: string | null }): boolean {
+  if (!r || r.round <= 0) return false;
+  if (!r.date) return true; // if no date, assume available
+  return r.date < isoTodayUTC();
+}
 type RaceList = { season: number; races: RaceInfo[] };
 type SessionList = { season: number; round: number; sessions: string[] };
 
@@ -17,6 +40,7 @@ type TyresResponse = { season: number; round: number; session: string; drivers: 
 
 export default function App() {
   const [status, setStatus] = useState("Loading...");
+  const [mode, setMode] = useState<"replay" | "predict">("replay");
   const [seasons, setSeasons] = useState<number[]>([]);
   const [season, setSeason] = useState<number>(2024);
 
@@ -27,7 +51,31 @@ export default function App() {
   const [tyres, setTyres] = useState<TyresResponse | null>(null);
   const [session, setSession] = useState<string>("FP1");
 
-  const selectedRace = useMemo(
+  const maxSeasonAvailable = useMemo(() => (seasons.length ? Math.max(...seasons) : season), [seasons, season]);
+
+  
+  const filteredRaces = useMemo(() => {
+    if (!races) return [];
+    if (mode === "predict") {
+      return races.filter(isFutureRace);
+    }
+    return races.filter(isPastOrTodayRace);
+  }, [races, mode]);
+
+
+  // Auto-select next future race when entering prediction mode
+  useEffect(() => {
+    if (mode !== "predict") return;
+    if (!filteredRaces || filteredRaces.length === 0) return;
+
+    const next = filteredRaces[0];
+    if (next && next.round && next.round !== round) {
+      setRound(next.round);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, filteredRaces.length]);
+
+const selectedRace = useMemo(
     () => races.find((r) => r.round === round),
     [races, round]
   );
@@ -57,8 +105,9 @@ export default function App() {
       try {
         setStatus("Loading races...");
         const r = await getJSON<RaceList>(`/options/races/${season}`);
-        setRaces(r.races);
-        setRound(r.races[0]?.round ?? 1);
+        const rr = (r.races ?? []).filter((x:any) => (x?.round ?? 0) > 0);
+        setRaces(rr);
+        setRound(rr[0]?.round ?? 1);
         setStatus("Ready");
       } catch (e: any) {
         setStatus(`Error loading races: ${e.message}`);
@@ -117,6 +166,43 @@ return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
       <h1 style={{ marginTop: 0 }}>F1 Replay + Prediction</h1>
 
+        <div style={{ display: "flex", gap: 10, marginTop: 14, marginBottom: 18 }}>
+          <button
+            onClick={() => setMode("replay")}
+            style={{
+              padding: "10px 12px",
+              borderRadius: 12,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: mode === "replay" ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.04)",
+              color: "white",
+              cursor: "pointer",
+            }}
+          >
+            Replay (Past Race)
+          </button>
+
+          <button
+            onClick={() => {
+              setMode("predict");
+              setSession("R");
+            }}
+            style={{
+              padding: "10px 12px",
+              borderRadius: 12,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: mode === "predict" ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.04)",
+              color: "white",
+              cursor: "pointer",
+            }}
+          >
+            Upcoming Predictions
+          </button>
+
+          <div style={{ marginLeft: "auto", opacity: 0.7, fontSize: 13, alignSelf: "center" }}>
+            Mode: <b>{mode === "replay" ? "Replay" : "Predictions"}</b>
+          </div>
+        </div>
+
       <div style={{ marginBottom: 12 }}>
         <TyreLegend />
       </div>
@@ -144,7 +230,7 @@ return (
             onChange={(e) => setRound(Number(e.target.value))}
             style={{ width: "100%", marginTop: 6, marginBottom: 12 }}
           >
-            {races.map((r) => (
+            {filteredRaces.map((r) => (
               <option key={r.round} value={r.round}>
                 Round {r.round} — {r.raceName}
               </option>
@@ -155,6 +241,7 @@ return (
           <select
             value={session}
             onChange={(e) => setSession(e.target.value)}
+            disabled={mode === "predict"}
             style={{ width: "100%", marginTop: 6, marginBottom: 12 }}
           >
             {sessions.map((s) => (
@@ -176,6 +263,9 @@ return (
             <div><b>Round:</b> {round}</div>
             <div><b>Race:</b> {selectedRace?.raceName ?? "-"}</div>
             <div><b>Session:</b> {session}</div>
+
+            <PredictionPanel season={season} round={round} session={session} />
+
           </div>
 
           <div style={{ marginTop: 14, opacity: 0.85 }}>
