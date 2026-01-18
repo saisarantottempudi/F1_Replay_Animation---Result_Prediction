@@ -1,234 +1,254 @@
 import { useEffect, useMemo, useState } from "react";
+import { getJSON } from "../api/client";
 
-type Props = {
-  season: number;
-  round: number;
-  session: string; // FP1/FP2/FP3/Q/R etc.
+type RaceRow = {
+  driver: string;
+  team: string;
+  p_win?: number;
+  p_top3?: number;
+  grid_pos?: number | null;
+  quali_best_s?: number | null;
 };
 
-type RaceRow = { driver: string; team: string; p_win: number; p_top3: number; grid_pos?: number; quali_best_s?: number };
-type QualiRow = { driver: string; team: string; p_pole: number; p_top3: number; quali_best_s?: number };
+type QualiRow = {
+  driver: string;
+  team: string;
+  p_pole?: number;
+  p_top3?: number;
+  quali_best_s?: number | null;
+};
 
-type RacePred = {
+type RaceResp = {
   season: number;
   round: number;
   source: string;
-  winner: RaceRow;
-  top3: RaceRow[];
+  event?: string;
+  winner?: RaceRow;
+  top3?: RaceRow[];
   all?: RaceRow[];
+  detail?: string;
 };
 
-type QualiPred = {
+type QualiResp = {
   season: number;
   round: number;
   source: string;
-  pole: QualiRow;
-  top3: QualiRow[];
+  event?: string;
+  pole?: QualiRow;
+  top3?: QualiRow[];
   all?: QualiRow[];
+  detail?: string;
 };
 
-type ChampPred = {
+type ChampResp = {
   season: number;
-  mode: string;
-  driver_champion: { driver: string; expected_points: number }[];
-  constructor_champion?: { team: string; expected_points: number }[];
+  mode?: string;
+  driver_champion?: { driver: string; expected_points?: number; prob?: number }[];
+  constructor_champion?: { team: string; expected_points?: number; prob?: number }[];
+  detail?: string;
 };
 
-function apiBase() {
-  // Prefer env var, fallback to localhost API
-  // (works with Vite)
-  // @ts-ignore
-  return (import.meta?.env?.VITE_API_URL as string) || "http://127.0.0.1:8000";
+function fmtPct(x: any) {
+  if (x === null || x === undefined || Number.isNaN(Number(x))) return "—";
+  return `${(Number(x) * 100).toFixed(1)}%`;
 }
 
-async function fetchJson<T>(url: string, timeoutMs = 25000): Promise<T> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-
-  try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      headers: { "Accept": "application/json" },
-    });
-
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status} ${res.statusText}${txt ? ` — ${txt}` : ""}`);
-    }
-
-    return (await res.json()) as T;
-  } catch (e: any) {
-    if (e?.name === "AbortError") {
-      throw new Error(`Request timed out after ${timeoutMs / 1000}s`);
-    }
-    throw e;
-  } finally {
-    clearTimeout(t);
-  }
+function fmtNum(x: any) {
+  if (x === null || x === undefined || Number.isNaN(Number(x))) return "—";
+  return String(x);
 }
 
-function fmtPct(x: number) {
-  if (x == null || Number.isNaN(x)) return "—";
-  return `${(x * 100).toFixed(1)}%`;
-}
+export default function PredictionPanel(props: { season: number; round: number }) {
+  const { season, round } = props;
 
-export default function PredictionPanel({ season, round, session }: Props) {
-  const base = useMemo(() => apiBase(), []);
+  const [tab, setTab] = useState<"race" | "quali" | "champ">("race");
 
-  const [race, setRace] = useState<RacePred | null>(null);
-  const [quali, setQuali] = useState<QualiPred | null>(null);
-  const [champ, setChamp] = useState<ChampPred | null>(null);
+  const [race, setRace] = useState<RaceResp | null>(null);
+  const [quali, setQuali] = useState<QualiResp | null>(null);
+  const [champ, setChamp] = useState<ChampResp | null>(null);
 
-  const [loadingRace, setLoadingRace] = useState(false);
-  const [loadingQuali, setLoadingQuali] = useState(false);
-  const [loadingChamp, setLoadingChamp] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  const [errRace, setErrRace] = useState("");
-  const [errQuali, setErrQuali] = useState("");
-  const [errChamp, setErrChamp] = useState("");
-
-  // Race + Quali (fast) -> always load
-  useEffect(() => {
-    let alive = true;
-
-    setLoadingRace(true);
-    setErrRace("");
-    setRace(null);
-
-    fetchJson<RacePred>(`${base}/predict/race/${season}/${round}?topk=3`, 60000)
-      .then((d) => alive && setRace(d))
-      .catch((e) => alive && setErrRace(String(e?.message ?? e)))
-      .finally(() => alive && setLoadingRace(false));
-
-    return () => { alive = false; };
-  }, [base, season, round]);
+  const title = useMemo(() => {
+    if (tab === "race") return "Race Winner (Top 3)";
+    if (tab === "quali") return "Quali Pole (Top 3)";
+    return "Championship (Fast)";
+  }, [tab]);
 
   useEffect(() => {
-    let alive = true;
+    let cancelled = false;
+    const controller = new AbortController();
 
-    setLoadingQuali(true);
-    setErrQuali("");
-    setQuali(null);
+    async function run() {
+      setLoading(true);
+      setErr(null);
 
-    fetchJson<QualiPred>(`${base}/predict/quali/${season}/${round}?topk=3`, 60000)
-      .then((d) => alive && setQuali(d))
-      .catch((e) => alive && setErrQuali(String(e?.message ?? e)))
-      .finally(() => alive && setLoadingQuali(false));
-
-    return () => { alive = false; };
-  }, [base, season, round]);
-
-  // Championship -> ONLY when session is R (Race)
-  useEffect(() => {
-    let alive = true;
-
-    setChamp(null);
-    setErrChamp("");
-
-    if (session !== "R") {
-      setLoadingChamp(false);
-      return () => { alive = false; };
+      try {
+        if (tab === "race") {
+          const r = await getJSON<RaceResp>(`/predict/race/${season}/${round}?topk=3`, { signal: controller.signal } as any);
+          if (!cancelled) setRace(r);
+        } else if (tab === "quali") {
+          const q = await getJSON<QualiResp>(`/predict/quali/${season}/${round}?topk=3`, { signal: controller.signal } as any);
+          if (!cancelled) setQuali(q);
+        } else {
+          // keep it light to avoid timeouts
+          const c = await getJSON<ChampResp>(`/predict/championship/${season}?mode=fast&sims=10`, { signal: controller.signal } as any);
+          if (!cancelled) setChamp(c);
+        }
+      } catch (e: any) {
+        if (!cancelled) setErr(e?.message ?? String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
 
-    setLoadingChamp(true);
+    // 60s max
+    const t = setTimeout(() => controller.abort(), 60000);
+    run();
 
-    // Fast mode: small sims; still can take ~25–30s sometimes
-    fetchJson<ChampPred>(`${base}/predict/championship/${season}?mode=fast&sims=5`, 45000)
-      .then((d) => alive && setChamp(d))
-      .catch((e) => alive && setErrChamp(String(e?.message ?? e)))
-      .finally(() => alive && setLoadingChamp(false));
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+      controller.abort();
+    };
+  }, [season, round, tab]);
 
-    return () => { alive = false; };
-  }, [base, season, session]);
+  const shellStyle: React.CSSProperties = {
+    borderRadius: 14,
+    padding: 14,
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.10)",
+  };
+
+  const btn = (active: boolean): React.CSSProperties => ({
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: active ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.05)",
+    color: "white",
+    cursor: "pointer",
+    fontSize: 13,
+  });
 
   return (
-    <div style={{ marginTop: 18 }}>
-      <h3 style={{ margin: 0, marginBottom: 10 }}>Predictions</h3>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
-        {/* Race */}
-        <div style={{ borderRadius: 14, padding: 12, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-            <strong>Race Winner</strong>
-            <span style={{ opacity: 0.7, fontSize: 12 }}>Top 3</span>
-          </div>
-
-          {loadingRace && <p style={{ opacity: 0.7, marginTop: 10 }}>Loading…</p>}
-          {errRace && <p style={{ color: "#ff6b6b", marginTop: 10 }}>Error: {errRace}</p>}
-
-          {!loadingRace && !errRace && race && (
-            <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7 }}>
-              <div style={{ marginBottom: 8 }}>
-                <div><span style={{ opacity: 0.7 }}>Winner:</span> <b>{race.winner.driver}</b> <span style={{ opacity: 0.8 }}>({race.winner.team})</span></div>
-                <div><span style={{ opacity: 0.7 }}>P(win):</span> {fmtPct(race.winner.p_win)} • <span style={{ opacity: 0.7 }}>P(top3):</span> {fmtPct(race.winner.p_top3)}</div>
-              </div>
-
-              {race.top3.map((r, i) => (
-                <div key={r.driver} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                  <div>{i + 1}. <b>{r.driver}</b> <span style={{ opacity: 0.8 }}>({r.team})</span></div>
-                  <div style={{ opacity: 0.9 }}>{fmtPct(r.p_win)}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Quali */}
-        <div style={{ borderRadius: 14, padding: 12, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-            <strong>Quali Pole</strong>
-            <span style={{ opacity: 0.7, fontSize: 12 }}>Top 3</span>
-          </div>
-
-          {loadingQuali && <p style={{ opacity: 0.7, marginTop: 10 }}>Loading…</p>}
-          {errQuali && <p style={{ color: "#ff6b6b", marginTop: 10 }}>Error: {errQuali}</p>}
-
-          {!loadingQuali && !errQuali && quali && (
-            <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7 }}>
-              <div style={{ marginBottom: 8 }}>
-                <div><span style={{ opacity: 0.7 }}>Pole:</span> <b>{quali.pole.driver}</b> <span style={{ opacity: 0.8 }}>({quali.pole.team})</span></div>
-                <div><span style={{ opacity: 0.7 }}>P(pole):</span> {fmtPct(quali.pole.p_pole)} • <span style={{ opacity: 0.7 }}>P(top3):</span> {fmtPct(quali.pole.p_top3)}</div>
-              </div>
-
-              {quali.top3.map((q, i) => (
-                <div key={q.driver} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                  <div>{i + 1}. <b>{q.driver}</b> <span style={{ opacity: 0.8 }}>({q.team})</span></div>
-                  <div style={{ opacity: 0.9 }}>{fmtPct(q.p_pole)}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Championship */}
-        <div style={{ borderRadius: 14, padding: 12, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-            <strong>Championship</strong>
-            <span style={{ opacity: 0.7, fontSize: 12 }}>{session === "R" ? "Race only" : "Select R"}</span>
-          </div>
-
-          {session !== "R" && (
-            <p style={{ opacity: 0.7, marginTop: 10 }}>
-              Championship projection loads only for <b>Race (R)</b> session.
-            </p>
-          )}
-
-          {session === "R" && loadingChamp && <p style={{ opacity: 0.7, marginTop: 10 }}>Computing (fast)…</p>}
-          {session === "R" && errChamp && <p style={{ color: "#ff6b6b", marginTop: 10 }}>Error: {errChamp}</p>}
-
-          {session === "R" && !loadingChamp && !errChamp && champ && (
-            <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7 }}>
-              <div style={{ opacity: 0.8, marginBottom: 6 }}>Driver (expected points)</div>
-              {champ.driver_champion.slice(0, 5).map((d, i) => (
-                <div key={d.driver} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                  <div>{i + 1}. <b>{d.driver}</b></div>
-                  <div style={{ opacity: 0.9 }}>{d.expected_points.toFixed(2)}</div>
-                </div>
-              ))}
-            </div>
-          )}
+    <div style={shellStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+        <strong>{title}</strong>
+        <div style={{ opacity: 0.7, fontSize: 12 }}>
+          Season {season} • Round {round}
         </div>
       </div>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 10, marginBottom: 10, flexWrap: "wrap" }}>
+        <button style={btn(tab === "race")} onClick={() => setTab("race")}>Race</button>
+        <button style={btn(tab === "quali")} onClick={() => setTab("quali")}>Quali</button>
+        <button style={btn(tab === "champ")} onClick={() => setTab("champ")}>Championship</button>
+        <div style={{ marginLeft: "auto", opacity: 0.65, fontSize: 12, alignSelf: "center" }}>
+          (Prediction mode hides FP sessions)
+        </div>
+      </div>
+
+      {loading && <p style={{ opacity: 0.7, marginTop: 10 }}>Loading…</p>}
+      {err && <p style={{ color: "#ff6b6b", marginTop: 10 }}>Error: {err}</p>}
+
+      {!loading && !err && tab === "race" && race && (
+        <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7 }}>
+          <div style={{ opacity: 0.8, marginBottom: 6 }}>
+            Source: <b>{race.source}</b>{race.event ? <> • Event: <b>{race.event}</b></> : null}
+          </div>
+
+          {race.winner ? (
+            <div style={{ marginBottom: 10 }}>
+              <div><span style={{ opacity: 0.7 }}>Winner:</span> <b>{race.winner.driver}</b> <span style={{ opacity: 0.8 }}>({race.winner.team})</span></div>
+              <div><span style={{ opacity: 0.7 }}>P(win):</span> {fmtPct(race.winner.p_win)} • <span style={{ opacity: 0.7 }}>P(top3):</span> {fmtPct(race.winner.p_top3)}</div>
+              <div><span style={{ opacity: 0.7 }}>Grid:</span> {fmtNum(race.winner.grid_pos)} • <span style={{ opacity: 0.7 }}>Quali best:</span> {fmtNum(race.winner.quali_best_s)}</div>
+            </div>
+          ) : (
+            <div style={{ opacity: 0.75 }}>No winner data returned.</div>
+          )}
+
+          <div style={{ opacity: 0.8, marginBottom: 6 }}><b>Top 3</b></div>
+          <ol style={{ margin: 0, paddingLeft: 18 }}>
+            {(race.top3 ?? []).map((x, i) => (
+              <li key={i}>
+                <b>{x.driver}</b> <span style={{ opacity: 0.8 }}>({x.team})</span>{" "}
+                <span style={{ opacity: 0.75 }}>— P(win) {fmtPct(x.p_win)}, P(top3) {fmtPct(x.p_top3)}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {!loading && !err && tab === "quali" && quali && (
+        <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7 }}>
+          <div style={{ opacity: 0.8, marginBottom: 6 }}>
+            Source: <b>{quali.source}</b>{quali.event ? <> • Event: <b>{quali.event}</b></> : null}
+          </div>
+
+          {quali.pole ? (
+            <div style={{ marginBottom: 10 }}>
+              <div><span style={{ opacity: 0.7 }}>Pole:</span> <b>{quali.pole.driver}</b> <span style={{ opacity: 0.8 }}>({quali.pole.team})</span></div>
+              <div><span style={{ opacity: 0.7 }}>P(pole):</span> {fmtPct(quali.pole.p_pole)} • <span style={{ opacity: 0.7 }}>P(top3):</span> {fmtPct(quali.pole.p_top3)}</div>
+              <div><span style={{ opacity: 0.7 }}>Quali best:</span> {fmtNum(quali.pole.quali_best_s)}</div>
+            </div>
+          ) : (
+            <div style={{ opacity: 0.75 }}>No pole data returned.</div>
+          )}
+
+          <div style={{ opacity: 0.8, marginBottom: 6 }}><b>Top 3</b></div>
+          <ol style={{ margin: 0, paddingLeft: 18 }}>
+            {(quali.top3 ?? []).map((x, i) => (
+              <li key={i}>
+                <b>{x.driver}</b> <span style={{ opacity: 0.8 }}>({x.team})</span>{" "}
+                <span style={{ opacity: 0.75 }}>— P(pole) {fmtPct(x.p_pole)}, P(top3) {fmtPct(x.p_top3)}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {!loading && !err && tab === "champ" && champ && (
+        <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7 }}>
+          <div style={{ opacity: 0.8, marginBottom: 6 }}>
+            Mode: <b>{champ.mode ?? "fast"}</b>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <div style={{ opacity: 0.8, marginBottom: 6 }}><b>Drivers</b></div>
+              <ol style={{ margin: 0, paddingLeft: 18 }}>
+                {(champ.driver_champion ?? []).slice(0, 5).map((x, i) => (
+                  <li key={i}>
+                    <b>{x.driver}</b>{" "}
+                    <span style={{ opacity: 0.75 }}>
+                      {x.prob != null ? `— Prob ${fmtPct(x.prob)}` : x.expected_points != null ? `— Exp pts ${x.expected_points.toFixed(2)}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+
+            <div>
+              <div style={{ opacity: 0.8, marginBottom: 6 }}><b>Constructors</b></div>
+              <ol style={{ margin: 0, paddingLeft: 18 }}>
+                {(champ.constructor_champion ?? []).slice(0, 5).map((x, i) => (
+                  <li key={i}>
+                    <b>{x.team}</b>{" "}
+                    <span style={{ opacity: 0.75 }}>
+                      {x.prob != null ? `— Prob ${fmtPct(x.prob)}` : x.expected_points != null ? `— Exp pts ${x.expected_points.toFixed(2)}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 10, opacity: 0.65, fontSize: 12 }}>
+            Note: This is a fast approximation to avoid timeouts. We’ll add full Monte Carlo later.
+          </div>
+        </div>
+      )}
     </div>
   );
 }
