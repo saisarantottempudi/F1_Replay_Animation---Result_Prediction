@@ -33,6 +33,7 @@ class RaceInfo(BaseModel):
     round: int
     raceName: str
 
+    date: str | None = None
 class RaceList(BaseModel):
     season: int
     races: List[RaceInfo]
@@ -47,23 +48,55 @@ def seasons():
 
 @app.get("/options/races/{season}", response_model=RaceList)
 def races(season: int):
-    schedule = fastf1.get_event_schedule(season)
-    races: List[RaceInfo] = []
+    try:
+        schedule = fastf1.get_event_schedule(season)
+    except Exception:
+        return {"season": season, "races": []}
 
+    races = []
     for _, row in schedule.iterrows():
-        round_num = int(row["RoundNumber"])
-        event_name = str(row["EventName"])
-
-        # Filter out testing/non-race placeholders
-        if round_num <= 0:
+        # Round
+        rnd = None
+        if "RoundNumber" in row:
+            rnd = row.get("RoundNumber")
+        elif "Round" in row:
+            rnd = row.get("Round")
+        if rnd is None:
             continue
-        if "testing" in event_name.lower():
-            continue
 
-        races.append(RaceInfo(round=round_num, raceName=event_name))
+        # Name
+        name = None
+        if "EventName" in row:
+            name = row.get("EventName")
+        elif "Event" in row:
+            name = row.get("Event")
+        if not name:
+            name = "Unknown GP"
 
-    races.sort(key=lambda x: x.round)
-    return RaceList(season=season, races=races)
+        # Date
+        dt = None
+        if "EventDate" in row:
+            dt = row.get("EventDate")
+        elif "Date" in row:
+            dt = row.get("Date")
+
+        date_iso = None
+        try:
+            if dt is not None:
+                # pandas Timestamp or datetime
+                if hasattr(dt, "date"):
+                    date_iso = str(dt.date())
+                else:
+                    date_iso = str(dt)
+                if " " in date_iso:
+                    date_iso = date_iso.split(" ")[0]
+        except Exception:
+            date_iso = None
+
+        races.append({"round": int(rnd), "raceName": str(name), "date": date_iso})
+
+    races.sort(key=lambda x: x["round"])
+    return {"season": season, "races": races}
 
 class SessionList(BaseModel):
     season: int
