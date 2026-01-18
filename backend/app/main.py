@@ -44,14 +44,79 @@ def health():
 
 @app.get("/options/seasons", response_model=SeasonList)
 def seasons():
-    return SeasonList(seasons=list(range(2018, 2026)))
+    """
+    Return a stable list of seasons:
+    - includes current year and next year for "upcoming predictions"
+    - keeps older seasons available for replay
+    """
+    from datetime import datetime
+    this_year = datetime.utcnow().year
+    # Keep a reasonable history window; adjust if you want more
+    start_year = 2018
+    end_year = this_year + 1
+    return SeasonList(seasons=list(range(start_year, end_year + 1)))
+
+
 
 @app.get("/options/races/{season}", response_model=RaceList)
 def races(season: int):
+    """
+    Return race list with optional ISO date (YYYY-MM-DD) if available.
+
+    IMPORTANT:
+    - For upcoming predictions we need dates to filter "future races".
+    - FastF1 may fail to fetch schedules for future years depending on data availability/network/cache.
+      In that case we fall back to an empty list (but NOT a 500).
+    """
     try:
         schedule = fastf1.get_event_schedule(season)
     except Exception:
-        return {"season": season, "races": []}
+        # Don't crash the UI — just return empty.
+        return RaceList(season=season, races=[])
+
+    races: list[RaceInfo] = []
+
+    for _, row in schedule.iterrows():
+        # Round number (handle different column naming)
+        rnd = row.get("RoundNumber", None)
+        if rnd is None:
+            rnd = row.get("Round", None)
+        if rnd is None:
+            continue
+
+        try:
+            round_num = int(rnd)
+        except Exception:
+            continue
+
+        # Filter non-race placeholders (testing etc.)
+        name = row.get("EventName", None) or row.get("Event", None) or "Unknown GP"
+        name_s = str(name)
+        if round_num <= 0:
+            continue
+        if "testing" in name_s.lower():
+            continue
+
+        # Date (best-effort)
+        dt = row.get("EventDate", None) or row.get("Date", None)
+        iso = None
+        if dt is not None:
+            try:
+                # pandas.Timestamp -> python datetime -> ISO date
+                iso = dt.to_pydatetime().date().isoformat()
+            except Exception:
+                try:
+                    # already a date/datetime-like
+                    iso = str(dt)[:10]
+                except Exception:
+                    iso = None
+
+        races.append(RaceInfo(round=round_num, raceName=name_s, date=iso))
+
+    races.sort(key=lambda x: x.round)
+    return RaceList(season=season, races=races)
+
+
 
     races = []
     for _, row in schedule.iterrows():

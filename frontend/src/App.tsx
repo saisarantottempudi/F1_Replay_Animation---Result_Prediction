@@ -52,6 +52,18 @@ export default function App() {
   const [session, setSession] = useState<string>("FP1");
 
   const maxSeasonAvailable = useMemo(() => (seasons.length ? Math.max(...seasons) : season), [seasons, season]);
+  // Auto-lock season in prediction mode (avoid predicting completed seasons)
+  useEffect(() => {
+    if (mode !== "predict") return;
+    // Always use latest season available for upcoming predictions
+    if (season !== maxSeasonAvailable) {
+      setSeason(maxSeasonAvailable);
+    }
+    // Ensure we are in Race session context for predictions
+    if (session !== "R") setSession("R");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, maxSeasonAvailable]);
+
 
   
   const filteredRaces = useMemo(() => {
@@ -184,6 +196,7 @@ return (
           <button
             onClick={() => {
               setMode("predict");
+              setSeason(maxSeasonAvailable);
               setSession("R");
             }}
             style={{
@@ -214,6 +227,7 @@ return (
           <label>Season</label>
           <select
             value={season}
+            disabled={mode === "predict"}
             onChange={(e) => setSeason(Number(e.target.value))}
             style={{ width: "100%", marginTop: 6, marginBottom: 12 }}
           >
@@ -230,11 +244,15 @@ return (
             onChange={(e) => setRound(Number(e.target.value))}
             style={{ width: "100%", marginTop: 6, marginBottom: 12 }}
           >
-            {filteredRaces.map((r) => (
-              <option key={r.round} value={r.round}>
-                Round {r.round} — {r.raceName}
-              </option>
-            ))}
+            {filteredRaces.length === 0 ? (
+              <option value={round}>(No future races for this season)</option>
+            ) : (
+              filteredRaces.map((r) => (
+                <option key={r.round} value={r.round}>
+                  Round {r.round} — {r.raceName}
+                </option>
+              ))
+            )}
           </select>
 
           <label>Session</label>
